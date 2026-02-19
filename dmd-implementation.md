@@ -85,13 +85,13 @@ This is why FastVideo computes `grad` as the difference between two `pred_noise_
 
 Directly optimizing with the gradient expression requires computing $\nabla_\theta G_\theta(z)$ (the generator Jacobian). The trick used in practice — borrowed from SDS (Score Distillation Sampling) — is to cast it as an MSE loss with a **detached target**:
 
-$$\mathcal{L}_\text{DMD} = \frac{1}{2} \left\| G_\theta(z) - \text{sg}\left[G_\theta(z) - w \cdot \text{grad}\right] \right\|^2$$
+$$\mathcal{L}_\text{DMD} = \frac{1}{2} \left\| G_\theta(z) - \text{sg}\left[G_\theta(z) - \text{grad}\right] \right\|^2$$
 
-where $\text{sg}[\cdot]$ is stop-gradient and $w$ is a scalar weight. Differentiating this w.r.t. $\theta$:
+where $\text{sg}[\cdot]$ is stop-gradient and $\text{grad} = s_\text{fake}(x_t, t) - s_\text{real}(x_t, t)$ (the score difference from Step 5, approximated via model predictions). Differentiating this w.r.t. $\theta$:
 
-$$\nabla_\theta \mathcal{L}_\text{DMD} = \nabla_\theta G_\theta(z) \cdot w \cdot \text{grad}$$
+$$\nabla_\theta \mathcal{L}_\text{DMD} = \nabla_\theta G_\theta(z) \cdot \text{grad}$$
 
-This is exactly $\nabla_\theta G_\theta(z) \cdot (s_\text{fake} - s_\text{real})$ (up to constants), matching the score difference gradient from Step 5. The MSE formulation lets standard backprop handle the $\nabla_\theta G_\theta$ term automatically. This is what FastVideo implements:
+This is exactly $\nabla_\theta G_\theta(z) \cdot (s_\text{fake} - s_\text{real})$, matching the score difference gradient from Step 5. The MSE formulation lets standard backprop handle the $\nabla_\theta G_\theta$ term automatically. This is what FastVideo implements:
 
 ```python
 dmd_loss = 0.5 * F.mse_loss(
@@ -109,14 +109,12 @@ grad = (faker_score_pred_video - real_score_pred_video) \
      / torch.abs(original_latent - real_score_pred_video).mean()
 ```
 
-The denominator $|G_\theta(z) - \hat{x}_{0,\text{real}}|$ measures how far the generator output is from what the teacher would predict — i.e., the scale of the teacher's correction. Dividing by this makes the gradient magnitude adaptive: large corrections are scaled down, preventing gradient explosion when the generator is far from the teacher's manifold.
-
 **2. GAN Loss (Eq. 4):**
 A discriminator head $D$ is attached to the fake score model's bottleneck, classifying diffused real vs. generated samples:
 
 $$\mathcal{L}_\text{GAN} = \mathbb{E}[\log D(F(x, t))] + \mathbb{E}[-\log(D(F(G_\theta(z), t)))]$$
 
-This provides a per-sample adversarial signal that complements the distribution-level matching gradient.
+This allows the student generator to have better performance than the teacher by providing adversarial training signals based on the real data.
 
 **3. Fake Score Denoising Loss:**
 Standard denoising score matching applied to generator outputs (not real data), so the fake score model tracks the generator's evolving distribution.
@@ -148,7 +146,7 @@ The paper's SDXL 4-step schedule uses $\{999, 749, 499, 249\}$.
 
 ### Backward Simulation / Data-Free Mode (Section 4.5)
 
-Addresses training-inference mismatch: during training, the student denoises from noisy *real images*, but at inference it denoises from its own previous outputs. The fix is to simulate the student's own multi-step inference trajectory during training, then apply the DMD loss at an intermediate point along that trajectory.
+Addresses training-inference mismatch: during training, the student denoises from noisy *real images*, but at inference it denoises from its own previous outputs. The fix is to simulate the student's own multi-step inference trajectory during training, then apply the DMD loss at an intermediate point along that trajectory as the noisy fake images.
 
 ### Key Differences from DMD1
 
